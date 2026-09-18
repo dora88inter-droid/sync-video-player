@@ -37,6 +37,12 @@
   let lastHardSyncAt = 0;
 
   function syncedNow() { return Date.now() + clockOffset; }
+  function settleWithin(operation, timeout = 800) {
+    return Promise.race([
+      Promise.resolve(operation),
+      new Promise(resolve => setTimeout(resolve, timeout))
+    ]);
+  }
 
   function defaultState() {
     return { version: 0, provider: null, videoId: null, status: 'paused', position: 0, anchorTime: syncedNow(), executeAt: null, updatedAt: syncedNow() };
@@ -188,6 +194,8 @@
     pause() { return this.instance.pause(); }
     seek(value) { return this.instance.setCurrentTime(Math.max(0, value)); }
     time() { return this.instance.getCurrentTime(); }
+    volume() { return this.instance.getVolume(); }
+    setVolume(value) { return this.instance.setVolume(value); }
     destroy() { return this.instance.destroy(); }
   }
   class YouTubeAdapter {
@@ -212,6 +220,8 @@
     async pause() { this.instance.pauseVideo(); }
     async seek(value) { this.instance.seekTo(Math.max(0, value), true); }
     async time() { return this.instance.getCurrentTime() || 0; }
+    async volume() { return this.instance.getVolume(); }
+    async setVolume(value) { this.instance.setVolume(value); }
     destroy() { this.instance?.destroy(); }
   }
 
@@ -241,8 +251,8 @@
   async function applyState(state) {
     updateUi();
     if (!state.provider || !document.getElementById('player')) return;
-    if (!(await ensurePlayer(state))) return;
     if (role === 'watch' && !viewerPrepared) return;
+    if (!(await ensurePlayer(state))) return;
     clearTimeout(scheduledTimer);
     driftViolations = 0;
     lastHardSyncAt = syncedNow();
@@ -292,7 +302,7 @@
   }
   function renderViewer() {
     document.getElementById('app').innerHTML = `<div class="viewer"><header class="topbar"><div class="brand"><span class="mark">▶</span><div>動画視聴ページ<div class="room">Room ${roomId}</div></div></div><span class="status" id="connectionStatus">接続中…</span></header><section class="panel ready-gate" id="gate"><div><div class="ready-badge">● 視聴前の準備</div><h1>イベント開始まで<br>しばらくお待ちください</h1><p id="gateText">動画が設定されたら、視聴準備をしてください。</p><button class="btn primary" id="readyBtn">🔊 視聴準備をする</button></div></section><section class="panel player-panel" hidden id="playerPanel"><div class="player-wrap" id="player"></div><div class="controls"><div class="notice" id="notice">管理者の操作を待っています。</div><div class="debug" id="debug" ${debugMode ? '' : 'hidden'}></div></div></section></div>`;
-    bindViewer(); if (currentState.provider) ensurePlayer(currentState); startPresence(); updateUi();
+    bindViewer(); startPresence(); updateUi();
   }
 
   function bindAdmin() {
@@ -329,26 +339,39 @@
   function bindViewer() {
     document.getElementById('readyBtn').onclick = async () => {
       if (!currentState.provider) return toast('まだ動画が設定されていません');
+      const button = document.getElementById('readyBtn');
       const gate = document.getElementById('gate');
       const panel = document.getElementById('playerPanel');
-      if (!(await ensurePlayer(currentState))) {
+      button.disabled = true;
+      button.textContent = '準備中…';
+      panel.style.opacity = '0';
+      panel.hidden = false;
+      if (!(await settleWithin(ensurePlayer(currentState), 5000))) {
         viewerPrepared = false;
         writePresence('connected');
+        panel.hidden = true;
+        panel.style.opacity = '';
+        button.disabled = false;
+        button.textContent = '🔊 視聴準備をする';
         return;
       }
       viewerPrepared = true;
       writePresence('ready');
+      let originalVolume = null;
       try {
-        await player.play();
+        originalVolume = await settleWithin(player.volume());
+        await settleWithin(player.setVolume(0));
+        await settleWithin(player.play());
         if (currentState.status !== 'playing') {
           await new Promise(resolve => setTimeout(resolve, 80));
-          await player.pause();
-          await player.seek(expectedPosition());
+          await settleWithin(player.pause());
+          await settleWithin(player.seek(expectedPosition()));
         }
       } catch {}
-      await applyState(currentState);
+      try { if (originalVolume !== null) await settleWithin(player.setVolume(originalVolume)); } catch {}
       gate.hidden = true;
-      panel.hidden = false;
+      panel.style.opacity = '';
+      void applyState(currentState);
     };
   }
 
