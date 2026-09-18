@@ -15,11 +15,11 @@
   const config = window.SYNC_CONFIG || {};
 
   let player = null;
+  let clockOffset = 0;
   let currentState = readState();
   let transportMode = 'local';
   let supabaseClient = null;
   let realtimeChannel = null;
-  let clockOffset = 0;
   let currentMediaKey = '';
   let playerLoadPromise = null;
   let ready = false;
