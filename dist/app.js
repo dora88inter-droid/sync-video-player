@@ -25,7 +25,8 @@
   let realtimeChannel = null;
   let currentMediaKey = '';
   let playerLoadPromise = null;
-  let ready = false;
+  let playerReady = false;
+  let viewerPrepared = role !== 'watch';
   let actualTime = 0;
   let duration = 0;
   let scheduledTimer = null;
@@ -217,8 +218,8 @@
   async function ensurePlayer(state) {
     if (!state.provider || !state.videoId) return false;
     const key = `${state.provider}:${state.videoId}:${state.hash || ''}`;
-    if (key === currentMediaKey && player) return ready || (playerLoadPromise ? playerLoadPromise : false);
-    clearTimeout(scheduledTimer); ready = false; currentMediaKey = key;
+    if (key === currentMediaKey && player) return playerReady || (playerLoadPromise ? playerLoadPromise : false);
+    clearTimeout(scheduledTimer); playerReady = false; currentMediaKey = key;
     try { await player?.destroy?.(); } catch {}
     const host = document.getElementById('player');
     if (!host) return false;
@@ -227,7 +228,7 @@
     player = state.provider === 'vimeo' ? new VimeoAdapter(node, state) : new YouTubeAdapter(node, state);
     playerLoadPromise = (async () => {
       try {
-        await player.ready(); ready = true; updateUi(); return true;
+        await player.ready(); playerReady = true; updateUi(); return true;
       } catch (error) {
         host.innerHTML = `<div class="player-empty"><div><span class="empty-icon">!</span>動画を読み込めませんでした。<br>埋め込み許可とURLを確認してください。</div></div>`;
         showNotice(error.message || '動画の読み込みに失敗しました', true); return false;
@@ -241,6 +242,7 @@
     updateUi();
     if (!state.provider || !document.getElementById('player')) return;
     if (!(await ensurePlayer(state))) return;
+    if (role === 'watch' && !viewerPrepared) return;
     clearTimeout(scheduledTimer);
     driftViolations = 0;
     lastHardSyncAt = syncedNow();
@@ -262,7 +264,7 @@
     }
   }
   async function syncDrift() {
-    if (!player || !ready || currentState.status !== 'playing' || (currentState.executeAt && syncedNow() < currentState.executeAt)) return;
+    if (!player || !playerReady || !viewerPrepared || currentState.status !== 'playing' || (currentState.executeAt && syncedNow() < currentState.executeAt)) return;
     try {
       actualTime = await player.time();
       const expected = expectedPosition();
@@ -306,12 +308,12 @@
     byId('playBtn').onclick = async () => {
       if (!currentState.provider) return showNotice('先に動画を設定してください。', true);
       let position = expectedPosition();
-      try { if (player && ready) position = await player.time(); } catch {}
+      try { if (player && playerReady) position = await player.time(); } catch {}
       publish({ ...currentState, status: 'playing', position, anchorTime: syncedNow() + 900, executeAt: syncedNow() + 900 });
     };
     byId('pauseBtn').onclick = async () => {
       let position = expectedPosition();
-      try { if (player && ready) position = await player.time(); } catch {}
+      try { if (player && playerReady) position = await player.time(); } catch {}
       publish({ ...currentState, status: 'paused', position, anchorTime: syncedNow(), executeAt: null });
     };
     byId('resetBtn').onclick = () => publish({ ...currentState, status: 'paused', position: 0, anchorTime: syncedNow(), executeAt: null });
@@ -329,20 +331,24 @@
       if (!currentState.provider) return toast('まだ動画が設定されていません');
       const gate = document.getElementById('gate');
       const panel = document.getElementById('playerPanel');
-      gate.hidden = true;
-      panel.hidden = false;
-      ready = true;
-      writePresence('ready');
       if (!(await ensurePlayer(currentState))) {
-        ready = false;
+        viewerPrepared = false;
         writePresence('connected');
         return;
       }
+      viewerPrepared = true;
+      writePresence('ready');
       try {
-        await player.play(); await new Promise(resolve => setTimeout(resolve, 180));
-        if (currentState.status !== 'playing') await player.pause();
+        await player.play();
+        if (currentState.status !== 'playing') {
+          await new Promise(resolve => setTimeout(resolve, 80));
+          await player.pause();
+          await player.seek(expectedPosition());
+        }
       } catch {}
       await applyState(currentState);
+      gate.hidden = true;
+      panel.hidden = false;
     };
   }
 
@@ -370,7 +376,7 @@
       if (gateText) gateText.textContent = currentState.provider ? '動画の準備ができました。ボタンを押してください。' : '動画が設定されたら、視聴準備をしてください。';
     }
   }
-  function writePresence(state = ready ? 'ready' : 'connected') {
+  function writePresence(state = viewerPrepared ? 'ready' : 'connected') {
     if (transportMode === 'supabase' && realtimeChannel) {
       realtimeChannel.track({ role, readiness: state, at: syncedNow() });
       return;
