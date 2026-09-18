@@ -52,10 +52,11 @@
     catch { return defaultState(); }
   }
   function expectedPosition(state = currentState, now = syncedNow()) {
-    if (!state || state.status !== 'playing') return Math.max(0, state?.position || 0);
+    const clamp = value => duration > 0 ? Math.min(duration, Math.max(0, value)) : Math.max(0, value);
+    if (!state || state.status !== 'playing') return clamp(state?.position || 0);
     const start = state.executeAt || state.anchorTime;
-    if (now < start) return Math.max(0, state.position || 0);
-    return Math.max(0, (state.position || 0) + (now - start) / 1000);
+    if (now < start) return clamp(state.position || 0);
+    return clamp((state.position || 0) + (now - start) / 1000);
   }
   function mapRemoteState(row) {
     if (!row) return null;
@@ -257,8 +258,9 @@
     driftViolations = 0;
     lastHardSyncAt = syncedNow();
     const target = expectedPosition(state);
+    const ended = duration > 0 && target >= duration - 0.1;
     try {
-      if (state.status === 'paused') {
+      if (state.status === 'paused' || ended) {
         await player.pause(); await player.seek(target);
       } else if (state.executeAt && syncedNow() < state.executeAt) {
         await player.pause(); await player.seek(state.position);
@@ -268,9 +270,11 @@
         await player.play();
       }
       actualTime = await player.time();
-      showNotice(state.status === 'playing' ? '再生中' : '待機中');
+      showNotice(ended ? '再生終了' : state.status === 'playing' ? '再生中' : '待機中');
     } catch {
-      showNotice('再生がブロックされました。プレイヤーの再生ボタンを一度押してください。', true);
+      if (ended) showNotice('再生終了');
+      else if (state.status === 'playing') showNotice('再生がブロックされました。プレイヤーの再生ボタンを一度押してください。', true);
+      else showNotice('再生位置を合わせられませんでした。', true);
     }
   }
   async function syncDrift() {
@@ -278,6 +282,10 @@
     try {
       actualTime = await player.time();
       const expected = expectedPosition();
+      if (duration > 0 && expected >= duration - 0.1) {
+        driftViolations = 0;
+        return;
+      }
       const drift = expected - actualTime;
       if (Math.abs(drift) >= HARD_SYNC_THRESHOLD) {
         driftViolations += 1;
