@@ -13,6 +13,9 @@
   sessionStorage.setItem('sync-video-client', clientId);
   const channel = 'BroadcastChannel' in window ? new BroadcastChannel(roomKey) : null;
   const config = window.SYNC_CONFIG || {};
+  const HARD_SYNC_THRESHOLD = 2.5;
+  const HARD_SYNC_CONFIRMATIONS = 2;
+  const HARD_SYNC_COOLDOWN = 10000;
 
   let player = null;
   let clockOffset = 0;
@@ -29,6 +32,8 @@
   let driftTimer = null;
   let uiTimer = null;
   let heartbeatTimer = null;
+  let driftViolations = 0;
+  let lastHardSyncAt = 0;
 
   function syncedNow() { return Date.now() + clockOffset; }
 
@@ -80,7 +85,7 @@
     return state;
   }
   function accept(state) {
-    if (!state || state.version < (currentState?.version || 0)) return;
+    if (!state || state.version <= (currentState?.version || 0)) return;
     currentState = state;
     applyState(state);
   }
@@ -237,6 +242,8 @@
     if (!state.provider || !document.getElementById('player')) return;
     if (!(await ensurePlayer(state))) return;
     clearTimeout(scheduledTimer);
+    driftViolations = 0;
+    lastHardSyncAt = syncedNow();
     const target = expectedPosition(state);
     try {
       if (state.status === 'paused') {
@@ -259,7 +266,17 @@
     try {
       actualTime = await player.time();
       const expected = expectedPosition();
-      if (Math.abs(expected - actualTime) >= 1) await player.seek(expected);
+      const drift = expected - actualTime;
+      if (Math.abs(drift) >= HARD_SYNC_THRESHOLD) {
+        driftViolations += 1;
+        if (driftViolations >= HARD_SYNC_CONFIRMATIONS && syncedNow() - lastHardSyncAt >= HARD_SYNC_COOLDOWN) {
+          await player.seek(expected);
+          lastHardSyncAt = syncedNow();
+          driftViolations = 0;
+        }
+      } else if (Math.abs(drift) < HARD_SYNC_THRESHOLD / 2) {
+        driftViolations = 0;
+      }
       updateUi();
     } catch {}
   }
